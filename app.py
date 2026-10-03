@@ -17,12 +17,42 @@ from analyzer import (
     get_available_local_models,
     set_env_local_model,
 )
+from dashboard_generator.core.pipeline import run_pipeline
+from dashboard_generator.core.superset_client import SupersetClient
+from dashboard_generator.core.config import settings
 
-st.set_page_config(page_title="Система анализа документов", layout="wide")
+st.set_page_config(page_title="Система анализа документов и дашбордов", layout="wide")
 
 
 
 # ── Вспомогательные функции ───────────────────────────────────────────────────
+
+def check_superset_online() -> bool:
+    """Проверяет доступность Apache Superset."""
+    try:
+        c = SupersetClient()
+        return c.check_health()
+    except Exception:
+        return False
+
+
+def check_postgres_online() -> bool:
+    """Проверяет доступность PostgreSQL."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=settings.postgres_host,
+            port=settings.postgres_port,
+            dbname=settings.postgres_db,
+            user=settings.postgres_user,
+            password=settings.postgres_password,
+            connect_timeout=2,
+        )
+        conn.close()
+        return True
+    except Exception:
+        return False
+
 
 def get_db_connection():
     """Возвращает новое соединение с базой данных reports.db."""
@@ -56,6 +86,12 @@ if "messages" not in st.session_state:
 
 if "active_ids" not in st.session_state:
     st.session_state.active_ids = []
+
+if "dashboard_history" not in st.session_state:
+    st.session_state.dashboard_history = []
+
+if "superset_prompt_input" not in st.session_state:
+    st.session_state.superset_prompt_input = ""
 
 
 # ── Боковая панель ────────────────────────────────────────────────────────────
@@ -246,45 +282,207 @@ with st.sidebar:
 """)
 
 
-# ── Главная область: чат ──────────────────────────────────────────────────────
+# ── Главная область: вкладки Чат и Дашборды Superset ─────────────────────────
 
-st.title("📊 Система анализа документов")
+st.title("🎓 Аналитическая система университета")
 st.caption(f"Активная модель: **{active_model_badge}**")
 
-if not active_ids:
-    st.warning("👈 Выберите один или несколько документов в боковой панели.")
-    st.stop()
+tab_chat, tab_superset = st.tabs([
+    "💬 Чат с документами (RAG)",
+    "📊 Генерация дашбордов (Apache Superset)"
+])
 
-conn = get_db_connection()
-active_names = pd.read_sql_query(
-    f"SELECT filename FROM reports WHERE id IN ({','.join('?' * len(active_ids))})",
-    conn,
-    params=active_ids,
-)
-conn.close()
-names_str = ", ".join(active_names["filename"].tolist())
-st.subheader(f"💬 Чат — {names_str}")
 
-col1, col2 = st.columns([8, 1])
-with col2:
-    if st.button("🗑️ Очистить", help="Очистить историю чата"):
-        st.session_state.messages = []
-        st.rerun()
+# ── Вкладка 1: Чат с документами ──────────────────────────────────────────────
+with tab_chat:
+    if not active_ids:
+        st.info("👈 Выберите один или несколько документов в боковой панели для анализа в чате.")
+    else:
+        conn = get_db_connection()
+        active_names = pd.read_sql_query(
+            f"SELECT filename FROM reports WHERE id IN ({','.join('?' * len(active_ids))})",
+            conn,
+            params=active_ids,
+        )
+        conn.close()
+        names_str = ", ".join(active_names["filename"].tolist())
+        st.subheader(f"💬 Чат — {names_str}")
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        col1, col2 = st.columns([8, 1])
+        with col2:
+            if st.button("🗑️ Очистить", help="Очистить историю чата"):
+                st.session_state.messages = []
+                st.rerun()
 
-user_query = st.chat_input("Введите запрос к документам…")
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-if user_query:
-    st.session_state.messages.append({"role": "user", "content": user_query})
-    with st.chat_message("user"):
-        st.markdown(user_query)
+        user_query = st.chat_input("Введите запрос к документам…")
 
-    with st.chat_message("assistant"):
-        with st.spinner(f"Модель ({active_model_badge}) анализирует документы…"):
-            answer = get_analysis_from_qwen(llm, active_ids, user_query)
-        st.markdown(answer)
+        if user_query:
+            st.session_state.messages.append({"role": "user", "content": user_query})
+            with st.chat_message("user"):
+                st.markdown(user_query)
 
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+            with st.chat_message("assistant"):
+                with st.spinner(f"Модель ({active_model_badge}) анализирует документы…"):
+                    answer = get_analysis_from_qwen(llm, active_ids, user_query)
+                st.markdown(answer)
+
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+
+
+# ── Вкладка 2: Генерация дашбордов Superset ──────────────────────────────────
+with tab_superset:
+    st.subheader("📊 Построение дашбордов в Apache Superset по текстовому запросу")
+    st.caption("Генерация интерактивных визуализаций по естественно-языковым запросам на основе семантической модели предметной области (отчеты ВПО и НИОКР).")
+
+    # Статусная панель подключений
+    col_stat1, col_stat2, col_stat3 = st.columns([3, 3, 2])
+    with col_stat1:
+        superset_ok = check_superset_online()
+        if superset_ok:
+            st.success("🟢 Apache Superset: онлайн (порт 8088)")
+        else:
+            st.warning("🟡 Apache Superset: офлайн")
+    with col_stat2:
+        pg_ok = check_postgres_online()
+        if pg_ok:
+            st.success("🟢 PostgreSQL Analytics: доступен (порт 5432)")
+        else:
+            st.warning("🟡 PostgreSQL: не подключен")
+    with col_stat3:
+        if st.button("🔄 Обновить статус", help="Проверить подключение к Superset и базе данных"):
+            st.rerun()
+
+    if not superset_ok or not pg_ok:
+        with st.expander("ℹ️ Как запустить Apache Superset и аналитическую базу"):
+            st.markdown("""
+            Для развертывания Apache Superset, PostgreSQL 16 и Redis:
+            1. Запустите скрипт **`scripts/start_superset.bat`** (или команду `docker compose -f docker-compose.superset.yml up -d`).
+            2. Дождитесь завершения инициализации базы и создания администратора (`admin / admin`).
+            3. Заполните базу аналитическими данными из отчетов: `python scripts/init_postgres_analytics.py`.
+            *(Даже если Superset временно не запущен, сервис сформирует валидный план и архив import-bundle.zip для ручного импорта!)*
+            """)
+
+    st.markdown("##### 💡 Быстрые примеры запросов:")
+    chip_cols = st.columns(3)
+    with chip_cols[0]:
+        if st.button("👥 Студенты по факультетам и ступеням"):
+            st.session_state.superset_prompt_input = "Построй дашборд распределения студентов по факультетам, уровням образования и формам обучения"
+            st.rerun()
+    with chip_cols[1]:
+        if st.button("💰 Финансирование НИОКР по источникам"):
+            st.session_state.superset_prompt_input = "Построй аналитический дашборд финансирования научных исследований (НИОКР) по источникам поступлений"
+            st.rerun()
+    with chip_cols[2]:
+        if st.button("📚 Научные публикации (ВАК, Scopus, РИНЦ)"):
+            st.session_state.superset_prompt_input = "Построй дашборд динамики научных публикаций сотрудников университета по базам цитирования"
+            st.rerun()
+
+    chip_cols2 = st.columns(3)
+    with chip_cols2[0]:
+        if st.button("🔬 Сравнение факультетов (лаборатории)"):
+            st.session_state.superset_prompt_input = "Сравни показатели факультетов по численности студентов, финансированию лабораторий и статьям"
+            st.rerun()
+    with chip_cols2[1]:
+        if st.button("💳 Стипендиальный фонд"):
+            st.session_state.superset_prompt_input = "Построй дашборд структуры выплат стипендиального фонда университета за 2024-2025 годы"
+            st.rerun()
+    with chip_cols2[2]:
+        if st.button("🏛️ Анализ факультета ФПМИ"):
+            st.session_state.superset_prompt_input = "Построй аналитический отчет по студентам факультета ФПМИ и формам обучения"
+            st.rerun()
+
+    prompt_text = st.text_area(
+        "Ваш запрос на построение дашборда:",
+        value=st.session_state.get("superset_prompt_input", ""),
+        placeholder="Например: Построй дашборд по распределению студентов по факультетам и формам обучения...",
+        height=85,
+    )
+
+    col_btn1, col_btn2 = st.columns([3, 5])
+    with col_btn1:
+        generate_btn = st.button("🚀 Сгенерировать дашборд", type="primary", use_container_width=True)
+    with col_btn2:
+        skip_import = st.checkbox("Только собрать bundle (без вызова API Superset)", value=(not superset_ok))
+
+    if generate_btn:
+        if not prompt_text.strip():
+            st.warning("⚠️ Пожалуйста, введите запрос на построение дашборда или выберите один из быстрых примеров выше.")
+        else:
+            with st.status("🛠️ Выполнение конвейера prompt-to-dashboard...", expanded=True) as status_box:
+                log_container = st.empty()
+                logs_history = []
+
+                def on_progress(msg: str):
+                    logs_history.append(msg)
+                    log_container.markdown("\n\n".join(logs_history))
+
+                prov = "gemini" if selected_provider == "Облачные модели" else "local"
+                g_key = st.session_state.get("gemini_api_key", env_gemini_key) if prov == "gemini" else None
+                g_model = model_name if prov == "gemini" else None
+
+                result = run_pipeline(
+                    prompt=prompt_text,
+                    provider=prov,
+                    gemini_key=g_key,
+                    gemini_model=g_model,
+                    skip_superset_import=skip_import,
+                    progress_callback=on_progress,
+                )
+
+                if result.success:
+                    status_box.update(label=f"✅ Дашборд «{result.dashboard_title}» успешно создан!", state="complete", expanded=False)
+                    st.success(f"🎉 **Дашборд успешно создан:** «{result.dashboard_title}» ({len(result.plan.charts) if result.plan else 0} чартов)")
+
+                    c_act1, c_act2 = st.columns([4, 4])
+                    with c_act1:
+                        if result.dashboard_url:
+                            st.link_button("🔗 Открыть дашборд в Apache Superset", result.dashboard_url, type="primary", use_container_width=True)
+                    with c_act2:
+                        if result.bundle_bytes:
+                            st.download_button(
+                                "💾 Скачать import-bundle.zip",
+                                data=result.bundle_bytes,
+                                file_name=f"superset_bundle_{result.dashboard_uuid}.zip",
+                                mime="application/zip",
+                                use_container_width=True,
+                            )
+
+                    # Сохранение в историю сессии
+                    import datetime
+                    st.session_state.dashboard_history.insert(0, {
+                        "title": result.dashboard_title,
+                        "uuid": result.dashboard_uuid,
+                        "url": result.dashboard_url,
+                        "charts_count": len(result.plan.charts) if result.plan else 0,
+                        "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                        "prompt": prompt_text,
+                    })
+
+                    # Детали чартов
+                    if result.plan and result.plan.charts:
+                        with st.expander("📊 Детали чартов и сгенерированные SQL-запросы", expanded=True):
+                            for i, ch in enumerate(result.plan.charts, 1):
+                                st.markdown(f"**{i}. {ch.title}** (тип: `{ch.viz_type}`) — *{ch.description or ''}*")
+                                st.code(ch.sql, language="sql")
+                else:
+                    status_box.update(label="❌ Ошибка при генерации дашборда", state="error", expanded=True)
+                    st.error(f"Не удалось построить дашборд: {result.error_message}")
+
+    # Журнал дашбордов текущей сессии
+    if st.session_state.dashboard_history:
+        st.divider()
+        st.markdown("##### 📜 Недавно созданные дашборды:")
+        for item in st.session_state.dashboard_history[:5]:
+            col_h1, col_h2, col_h3 = st.columns([5, 2, 2])
+            with col_h1:
+                st.markdown(f"**{item['title']}** ({item['charts_count']} чартов) — *{item['time']}*")
+                st.caption(f"Запрос: {item['prompt']}")
+            with col_h2:
+                if item["url"]:
+                    st.link_button("🔗 Открыть", item["url"], use_container_width=True)
+            with col_h3:
+                st.caption(f"UUID: `{item['uuid'][:8]}...`")
