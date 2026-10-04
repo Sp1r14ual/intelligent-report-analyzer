@@ -75,9 +75,11 @@ def map_viz_type(plan_viz_type: str) -> Tuple[str, dict]:
     else:  # table
         return "table", {
             "viz_type": "table",
+            "query_mode": "raw",
             "include_search": True,
             "page_length": 25,
             "show_cell_bars": True,
+            "table_timestamp_format": "smart_date",
         }
 
 
@@ -196,22 +198,92 @@ def build_superset_bundle_zip(plan: DashboardPlan) -> bytes:
 
         # Настройки чарта
         superset_viz, extra_viz_params = map_viz_type(chart.viz_type)
-
         primary_metric = chart.metric_column or "count"
 
-        params = {
-            "viz_type": superset_viz,
-            "datasource": f"{dataset_uuid}__table",
-            "slice_id": idx,
-            "metrics": [primary_metric],
-            "metric": primary_metric,
-            "groupby": chart.groupby,
-            "adhoc_filters": [],
-            "row_limit": chart.row_limit,
-            **extra_viz_params,
-        }
-        if chart.x_axis:
-            params["x_axis"] = chart.x_axis
+        if chart.viz_type == "table":
+            params = {
+                "viz_type": "table",
+                "datasource": f"{dataset_uuid}__table",
+                "slice_id": idx,
+                "query_mode": "raw",
+                "all_columns": chart.columns,
+                "metrics": [],
+                "percent_metrics": [],
+                "groupby": [],
+                "adhoc_filters": [],
+                "row_limit": chart.row_limit,
+                **extra_viz_params,
+            }
+        elif chart.viz_type in {"bar", "line"}:
+            x_axis = chart.x_axis
+            if not x_axis and chart.groupby:
+                x_axis = chart.groupby[0]
+            elif not x_axis:
+                non_metrics = [c for c in chart.columns if c != primary_metric]
+                x_axis = non_metrics[0] if non_metrics else chart.columns[0]
+
+            # Исключаем дублирование x_axis и primary_metric в groupby (критично для ECharts в Superset)
+            clean_groupby = [
+                g for g in chart.groupby
+                if g != x_axis and g != primary_metric
+            ]
+
+            params = {
+                "viz_type": superset_viz,
+                "datasource": f"{dataset_uuid}__table",
+                "slice_id": idx,
+                "x_axis": x_axis,
+                "metrics": [primary_metric],
+                "metric": primary_metric,
+                "groupby": clean_groupby,
+                "adhoc_filters": [],
+                "row_limit": chart.row_limit,
+                **extra_viz_params,
+            }
+        elif chart.viz_type == "pie":
+            clean_groupby = [g for g in chart.groupby if g != primary_metric]
+            if not clean_groupby and chart.x_axis and chart.x_axis != primary_metric:
+                clean_groupby = [chart.x_axis]
+            if not clean_groupby:
+                non_metrics = [c for c in chart.columns if c != primary_metric]
+                clean_groupby = [non_metrics[0]] if non_metrics else ["count"]
+
+            params = {
+                "viz_type": superset_viz,
+                "datasource": f"{dataset_uuid}__table",
+                "slice_id": idx,
+                "metrics": [primary_metric],
+                "metric": primary_metric,
+                "groupby": clean_groupby,
+                "adhoc_filters": [],
+                "row_limit": chart.row_limit,
+                **extra_viz_params,
+            }
+        elif chart.viz_type == "big_number":
+            params = {
+                "viz_type": superset_viz,
+                "datasource": f"{dataset_uuid}__table",
+                "slice_id": idx,
+                "metrics": [primary_metric],
+                "metric": primary_metric,
+                "groupby": [],
+                "adhoc_filters": [],
+                "row_limit": chart.row_limit,
+                **extra_viz_params,
+            }
+        else:
+            clean_groupby = [g for g in chart.groupby if g != primary_metric]
+            params = {
+                "viz_type": superset_viz,
+                "datasource": f"{dataset_uuid}__table",
+                "slice_id": idx,
+                "metrics": [primary_metric],
+                "metric": primary_metric,
+                "groupby": clean_groupby,
+                "adhoc_filters": [],
+                "row_limit": chart.row_limit,
+                **extra_viz_params,
+            }
 
         chart_yaml = {
             "slice_name": chart.title,
