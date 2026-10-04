@@ -17,3 +17,8 @@ scikit-learn>=1.4.0
 
 # Работа с API и сетью
 requests>=2.31.0
+
+# Генерация дашбордов Superset и семантическая валидация
+pydantic>=2.0.0
+PyYAML>=6.0.0
+psycopg2-binary>=2.9.0
