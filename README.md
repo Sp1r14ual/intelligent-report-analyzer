@@ -45,7 +45,7 @@ BGE-M3 (эмбеддинги) → FAISS-индекс
     CrossEncoder (переранжирование)
           │
           ▼
-    Qwen3-30B-A3B (генерация ответа)
+    YandexGPT 5 Lite 8B (генерация ответа)
 ```
 
 ---
@@ -56,7 +56,7 @@ BGE-M3 (эмбеддинги) → FAISS-индекс
 
 **Поиск и Retrieval** — FAISS, BGE-M3 Embeddings, BGE-Reranker (CrossEncoder)
 
-**Языковая модель** — Qwen3-30B-A3B, llama-cpp-python, GGUF
+**Языковая модель** — YandexGPT 5 Lite 8B, llama-server / llama-cpp-python, GGUF
 
 **Интерфейс** — Streamlit
 
@@ -102,7 +102,7 @@ project/
 4. Если запрос содержит количественные показатели — дополнительный поиск по таблицам.
 5. Результаты объединяются, дедуплицируются и переранжируются CrossEncoder-моделью.
 6. Из топ-результатов формируется контекст (не более 60 000 символов).
-7. Контекст и вопрос передаются в языковую модель Qwen3.
+7. Контекст и вопрос передаются в языковую модель YandexGPT 5 Lite.
 8. Из ответа модели удаляются блоки размышлений, возвращается финальный текст.
 
 ---
@@ -140,7 +140,7 @@ pip install -r requirements.txt
 
 ```
 models/
-└── Qwen2.5-7B-Instruct-Q4_K_M.gguf
+└── YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf
 ```
 
 Путь к модели задаётся в `analyzer.py`.

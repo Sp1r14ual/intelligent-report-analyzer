@@ -354,10 +354,8 @@ class PDFDataExtractor:
     """Сервис для извлечения данных из Markdown-таблиц отчетов с помощью LLM
     и сохранения в аналитические витрины PostgreSQL."""
 
-    def __init__(self, provider: str = "local", gemini_key: Optional[str] = None, gemini_model: Optional[str] = None):
-        self.provider = provider
-        self.gemini_key = gemini_key
-        self.gemini_model = gemini_model
+    def __init__(self, **kwargs):
+        pass
 
     def extract_from_report(
         self,
@@ -437,7 +435,8 @@ class PDFDataExtractor:
             schema = TARGET_TABLE_SCHEMAS[target_table]
             log(f"📊 Анализ таблицы: «{schema['title']}» (целевая витрина: `{target_table}`)...")
 
-            system_prompt = f"""Ты — специализированный модуль ETL и нормализации данных для базы PostgreSQL.
+            try:
+                system_prompt = f"""Ты — специализированный модуль ETL и нормализации данных для базы PostgreSQL.
 Твоя задача: преобразовать Markdown-таблицу из отчета образовательной организации в чистый JSON-массив объектов в строгом соответствии со схемой.
 
 ЦЕЛЕВАЯ ТАБЛИЦА: {target_table} ({schema['title']})
@@ -451,24 +450,26 @@ class PDFDataExtractor:
 4. Отчетный год: используй {year or 2025}, если год не указан явно в строке.
 5. Не добавляй никаких пояснений или комментариев до или после JSON."""
 
-            user_prompt = f"Markdown-таблица из отчета «{filename}»:\n\n{tbl_text}\n\nСформируй JSON-массив объектов для таблицы {target_table}."
+                user_prompt = f"Markdown-таблица из отчета «{filename}»:\n\n{tbl_text}\n\nСформируй JSON-массив объектов для таблицы {target_table}."
 
-            try:
-                raw_response = call_llm(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    provider=self.provider,
-                    gemini_key=self.gemini_key,
-                    gemini_model=self.gemini_model,
-                )
+                records = []
+                try:
+                    raw_response = call_llm(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        max_tokens=1500,
+                        timeout=60,
+                    )
+                    records = parse_llm_json_array(raw_response)
+                except Exception as llm_err:
+                    log(f"ℹ️ Модель не ответила за 60с ({llm_err}). Применение прямого семантического парсера...")
 
-                records = parse_llm_json_array(raw_response)
                 if not records:
                     log(f"⚙️ Применение семантического парсера структуры таблицы для `{target_table}`...")
                     records = fallback_parse_markdown_table(target_table, tbl_text, year)
 
                 if not records:
-                    log(f"⚠️ Модель не смогла извлечь структурированные строки для {target_table}.")
+                    log(f"⚠️ Не удалось извлечь структурированные строки для {target_table}.")
                     continue
 
                 validated_tuples = []

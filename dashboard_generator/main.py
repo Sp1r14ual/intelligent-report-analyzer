@@ -14,10 +14,8 @@ from dashboard_generator.core.pipeline import run_pipeline
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LLM to Apache Superset Dashboard Generator")
+    parser = argparse.ArgumentParser(description="YandexGPT to Apache Superset Dashboard Generator")
     parser.add_argument("prompt", type=str, help="Пользовательский запрос на русском языке")
-    parser.add_argument("--provider", type=str, default="gemini", choices=["gemini", "local"], help="Провайдер LLM")
-    parser.add_argument("--model", type=str, default=None, help="Название модели")
     parser.add_argument("--skip-superset", action="store_true", help="Пропустить вызов Superset REST API")
     parser.add_argument("--bundle-out", type=str, default=None, help="Путь для сохранения сгенерированного bundle.zip")
 
@@ -25,8 +23,6 @@ def main():
 
     result = run_pipeline(
         prompt=args.prompt,
-        provider=args.provider,
-        gemini_model=args.model,
         skip_superset_import=args.skip_superset,
         progress_callback=lambda msg: print(f"[{msg.split()[0]}] {' '.join(msg.split()[1:])}"),
     )
