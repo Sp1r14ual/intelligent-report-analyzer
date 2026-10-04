@@ -97,7 +97,7 @@ if not exist "!WIN_LLAMA!" (
     )
 )
 echo [OK] Using Windows binary: !WIN_LLAMA!
-"!WIN_LLAMA!" -m "!MODEL_PATH!" --host 127.0.0.1 --port !PORT! -c !CTX! -ngl !NGL! -np 1
+"!WIN_LLAMA!" -m "!MODEL_PATH!" --host 0.0.0.0 --port !PORT! -c !CTX! -ngl !NGL! -np 1
 goto end
 
 :end

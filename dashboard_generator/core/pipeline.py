@@ -160,7 +160,20 @@ def run_pipeline(
                 log(f"❌ {err}")
                 return PipelineResult(success=False, logs=logs, error_message=err, plan=plan)
 
-    # 6. Сборка ZIP-архива import-bundle для Apache Superset
+    # 6. Проверка и автоматическое наполнение витрин данными, если таблицы в БД пусты
+    try:
+        from .db_introspect import check_postgres_has_data, check_postgres_online
+        if check_postgres_online() and not check_postgres_has_data():
+            log("📥 В витринах PostgreSQL не обнаружено записей. Выполняется автоматическое наполнение данными отчетов...")
+            from scripts.init_postgres_analytics import init_analytics_database
+            if init_analytics_database():
+                log("✅ Аналитические витрины успешно наполнены показателями из отчетов ВПО и НИОКР!")
+            else:
+                log("⚠️ Автоматическое наполнение витрин завершилось предупреждением.")
+    except Exception as e:
+        log(f"ℹ️ Проверка наполненности витрин: {e}")
+
+    # 7. Сборка ZIP-архива import-bundle для Apache Superset
     log("📦 Сборка нативного архива import-bundle (ZIP) для Apache Superset...")
     try:
         bundle_bytes = build_superset_bundle_zip(plan)

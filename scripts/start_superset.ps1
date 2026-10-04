@@ -139,6 +139,11 @@ Write-Host "Initializing PostgreSQL analytics schema and seeding report data..."
 $pythonExe = "$projectRoot\.venv\Scripts\python.exe"
 if (Test-Path $pythonExe) {
     & $pythonExe "$projectRoot\scripts\init_postgres_analytics.py"
+} elseif (Test-Path "$projectRoot\.venv\bin\python") {
+    $driveLetter = $projectRoot.ToString().Substring(0, 1).ToLower()
+    $subPath = $projectRoot.ToString().Substring(3).Replace('\', '/')
+    $wslP = "/mnt/$driveLetter/$subPath"
+    & wsl.exe -d $wslDistro -u root -e bash -c "cd '$wslP' && .venv/bin/python scripts/init_postgres_analytics.py"
 } else {
     python "$projectRoot\scripts\init_postgres_analytics.py"
 }

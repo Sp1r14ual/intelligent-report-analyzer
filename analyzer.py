@@ -16,6 +16,28 @@ from retriever import FaissRetriever, extract_section_fragment
 
 
 
+def get_wsl_host_ip() -> str | None:
+    """Определяет IP-адрес хоста Windows при запуске кода внутри WSL2."""
+    try:
+        is_wsl = False
+        if os.path.exists("/proc/version"):
+            with open("/proc/version", "r", encoding="utf-8", errors="ignore") as f:
+                if "microsoft" in f.read().lower():
+                    is_wsl = True
+        if not is_wsl:
+            return None
+
+        if os.path.exists("/etc/resolv.conf"):
+            with open("/etc/resolv.conf", "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[0] == "nameserver":
+                        return parts[1]
+    except Exception:
+        pass
+    return None
+
+
 class LLMClient:
     """Универсальный клиент для взаимодействия с LLM:
     1) HTTP llama-server (OpenAI-compatible /v1/completions или /completion)
@@ -44,29 +66,46 @@ class LLMClient:
             except Exception:
                 self._llama_instance = None
 
+    def _get_candidate_urls(self) -> list[str]:
+        """Возвращает список URL для подключения с учетом возможного хоста Windows из WSL2."""
+        urls = [self.base_url]
+        if "127.0.0.1" in self.base_url or "localhost" in self.base_url:
+            host_ip = get_wsl_host_ip()
+            if host_ip:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(self.base_url)
+                port = parsed.port or 8080
+                wsl_url = f"http://{host_ip}:{port}"
+                if wsl_url not in urls:
+                    urls.append(wsl_url)
+        return urls
+
     def get_server_info(self) -> dict:
         """Проверяет доступность сервера llama-server и определяет имя запущенной модели."""
-        try:
-            resp = requests.get(f"{self.base_url}/props", timeout=1.5)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_path = data.get("model_path", "")
-                name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else "Online"
-                return {"online": True, "model": name}
-        except Exception:
-            pass
-
-        try:
-            resp = requests.get(f"{self.base_url}/v1/models", timeout=1.5)
-            if resp.status_code == 200:
-                data = resp.json()
-                models_data = data.get("data", [])
-                if models_data:
-                    raw_id = models_data[0].get("id", "")
-                    name = os.path.basename(raw_id.replace("\\", "/")) if raw_id else "Online"
+        for candidate_url in self._get_candidate_urls():
+            try:
+                resp = requests.get(f"{candidate_url}/props", timeout=1.5)
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    raw_path = data.get("model_path", "")
+                    name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else "Online"
                     return {"online": True, "model": name}
-        except Exception:
-            pass
+            except Exception:
+                pass
+
+            try:
+                resp = requests.get(f"{candidate_url}/v1/models", timeout=1.5)
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    models_data = data.get("data", [])
+                    if models_data:
+                        raw_id = models_data[0].get("id", "")
+                        name = os.path.basename(raw_id.replace("\\", "/")) if raw_id else "Online"
+                        return {"online": True, "model": name}
+            except Exception:
+                pass
 
         return {"online": False, "model": None}
 
@@ -92,27 +131,30 @@ class LLMClient:
             "repeat_penalty": repeat_penalty,
         }
 
-        try:
-            resp = requests.post(f"{self.base_url}/v1/completions", json=payload, timeout=240)
-            if resp.status_code == 200:
-                data = resp.json()
-                if "choices" in data and len(data["choices"]) > 0:
-                    return data
-            else:
-                print(f"[LLMClient] /v1/completions HTTP {resp.status_code}: {resp.text[:200]}")
-        except requests.exceptions.RequestException as e:
-            print(f"[LLMClient] /v1/completions error: {e}")
+        for candidate_url in self._get_candidate_urls():
+            try:
+                resp = requests.post(f"{candidate_url}/v1/completions", json=payload, timeout=240)
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    if "choices" in data and len(data["choices"]) > 0:
+                        return data
+                else:
+                    print(f"[LLMClient] /v1/completions HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException:
+                pass
 
-        try:
-            resp = requests.post(f"{self.base_url}/completion", json=payload, timeout=240)
-            if resp.status_code == 200:
-                data = resp.json()
-                text = data.get("content", "")
-                return {"choices": [{"text": text}]}
-            else:
-                print(f"[LLMClient] /completion HTTP {resp.status_code}: {resp.text[:200]}")
-        except requests.exceptions.RequestException as e:
-            print(f"[LLMClient] /completion error: {e}")
+            try:
+                resp = requests.post(f"{candidate_url}/completion", json=payload, timeout=240)
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    text = data.get("content", "")
+                    return {"choices": [{"text": text}]}
+                else:
+                    print(f"[LLMClient] /completion HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException:
+                pass
 
         # 3. Обращение к Ollama (порт 11434)
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")

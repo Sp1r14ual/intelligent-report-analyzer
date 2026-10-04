@@ -36,22 +36,7 @@ def check_superset_online() -> bool:
         return False
 
 
-def check_postgres_online() -> bool:
-    """Проверяет доступность PostgreSQL."""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=settings.postgres_host,
-            port=settings.postgres_port,
-            dbname=settings.postgres_db,
-            user=settings.postgres_user,
-            password=settings.postgres_password,
-            connect_timeout=2,
-        )
-        conn.close()
-        return True
-    except Exception:
-        return False
+from dashboard_generator.core.db_introspect import check_postgres_online, check_postgres_has_data
 
 
 def get_db_connection():
@@ -349,12 +334,36 @@ with tab_superset:
     with col_stat2:
         pg_ok = check_postgres_online()
         if pg_ok:
-            st.success("🟢 PostgreSQL Analytics: доступен (порт 5432)")
+            pg_has_data = check_postgres_has_data()
+            if pg_has_data:
+                st.success("🟢 PostgreSQL: витрины наполнены")
+            else:
+                st.warning("🟡 PostgreSQL: таблицы пусты")
         else:
             st.warning("🟡 PostgreSQL: не подключен")
     with col_stat3:
         if st.button("🔄 Обновить статус", help="Проверить подключение к Superset и базе данных"):
             st.rerun()
+
+    # Если PostgreSQL онлайн, но в таблицах нет данных
+    if pg_ok and not check_postgres_has_data():
+        st.warning("⚠️ **В базе данных PostgreSQL отсутствуют данные витрин.** Из-за этого дашборды в Superset строятся с пустыми графиками («No data»).")
+        if st.button("📥 Заполнить витрины данными из отчетов ВПО и НИОКР", type="primary", use_container_width=True):
+            from scripts.init_postgres_analytics import init_analytics_database
+            with st.spinner("Наполнение таблиц показателями отчетов..."):
+                if init_analytics_database():
+                    st.success("✅ База данных успешно наполнена данными! Теперь дашборды будут отображать реальные графики.")
+                    st.rerun()
+                else:
+                    st.error("❌ Ошибка при наполнении базы данных.")
+    elif pg_ok:
+        with st.expander("🛠️ Управление аналитическими витринами"):
+            if st.button("🔄 Перезаполнить / сбросить данные отчетов в PostgreSQL"):
+                from scripts.init_postgres_analytics import init_analytics_database
+                with st.spinner("Перезаполнение аналитических таблиц..."):
+                    if init_analytics_database():
+                        st.success("✅ Данные витрин успешно обновлены!")
+                        st.rerun()
 
     if not superset_ok or not pg_ok:
         with st.expander("ℹ️ Как запустить Apache Superset и аналитическую базу"):
@@ -362,7 +371,7 @@ with tab_superset:
             Для развертывания Apache Superset, PostgreSQL 16 и Redis:
             1. Запустите скрипт **`scripts/start_superset.bat`** (или команду `docker compose -f docker-compose.superset.yml up -d`).
             2. Дождитесь завершения инициализации базы и создания администратора (`admin / admin`).
-            3. Заполните базу аналитическими данными из отчетов: `python scripts/init_postgres_analytics.py`.
+            3. Заполните базу аналитическими данными из отчетов (кнопкой выше или командой `python scripts/init_postgres_analytics.py`).
             *(Даже если Superset временно не запущен, сервис сформирует валидный план и архив import-bundle.zip для ручного импорта!)*
             """)
 

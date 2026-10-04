@@ -27,13 +27,30 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "superset")
 
 
 def get_connection():
-    return psycopg2.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        dbname=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD,
-    )
+    candidates = [POSTGRES_HOST]
+    try:
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+        from analyzer import get_wsl_host_ip
+        wsl_ip = get_wsl_host_ip()
+        if wsl_ip and wsl_ip not in candidates:
+            candidates.append(wsl_ip)
+    except Exception:
+        pass
+
+    last_exc = None
+    for h in candidates:
+        try:
+            return psycopg2.connect(
+                host=h,
+                port=POSTGRES_PORT,
+                dbname=POSTGRES_DB,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                connect_timeout=3,
+            )
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
 
 
 def init_analytics_database():

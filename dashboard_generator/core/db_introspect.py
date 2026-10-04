@@ -17,6 +17,63 @@ class QueryIntrospectResult:
     error_message: str | None = None
 
 
+def get_postgres_connection():
+    """Создает соединение с PostgreSQL с поддержкой fallback на шлюз WSL2."""
+    if not HAS_PSYCOPG2:
+        raise ImportError("psycopg2 is not installed")
+    candidates = [settings.postgres_host]
+    try:
+        import sys
+        from pathlib import Path
+        root_dir = str(Path(__file__).resolve().parent.parent.parent)
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+        from analyzer import get_wsl_host_ip
+        wsl_ip = get_wsl_host_ip()
+        if wsl_ip and wsl_ip not in candidates:
+            candidates.append(wsl_ip)
+    except Exception:
+        pass
+
+    last_exc = None
+    for h in candidates:
+        try:
+            return psycopg2.connect(
+                host=h,
+                port=settings.postgres_port,
+                dbname=settings.postgres_db,
+                user=settings.postgres_user,
+                password=settings.postgres_password,
+                connect_timeout=3,
+            )
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
+
+
+def check_postgres_online() -> bool:
+    """Проверяет доступность PostgreSQL."""
+    try:
+        conn = get_postgres_connection()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def check_postgres_has_data() -> bool:
+    """Проверяет, наполнены ли аналитические таблицы витрин данными."""
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM analytics.stipend_fund;")
+        cnt = cursor.fetchone()[0]
+        conn.close()
+        return cnt > 0
+    except Exception:
+        return False
+
+
 def introspect_sql(sql: str, row_limit: int = 1) -> QueryIntrospectResult:
     """
     Выполняет запрос с LIMIT 1 в PostgreSQL для проверки синтаксиса и извлечения фактических колонок.
@@ -29,14 +86,7 @@ def introspect_sql(sql: str, row_limit: int = 1) -> QueryIntrospectResult:
     wrapped_sql = f"SELECT * FROM ({sql.rstrip(';')}) AS __subquery LIMIT {row_limit}"
 
     try:
-        conn = psycopg2.connect(
-            host=settings.postgres_host,
-            port=settings.postgres_port,
-            dbname=settings.postgres_db,
-            user=settings.postgres_user,
-            password=settings.postgres_password,
-            connect_timeout=3,
-        )
+        conn = get_postgres_connection()
         cursor = conn.cursor()
         cursor.execute(wrapped_sql)
         colnames = [desc[0].lower() for desc in cursor.description] if cursor.description else []
