@@ -85,6 +85,11 @@ with st.sidebar:
     st.header("📂 Загрузка документов")
     uploaded_file = st.file_uploader("PDF-документ", type="pdf")
     year = st.number_input("Год отчёта", value=2025, step=1)
+    auto_extract_superset = st.checkbox(
+        "📊 Извлечь данные в базу Superset (PostgreSQL)",
+        value=True,
+        help="Модель автоматически проанализирует таблицы в загруженном отчёте и наполнит ими витрины базы данных для дашбордов Superset.",
+    )
 
     if uploaded_file and st.button("Обработать и сохранить", type="primary"):
         with st.spinner("Идёт обработка документа..."):
@@ -94,6 +99,22 @@ with st.sidebar:
 
             if process_document(temp_path, year, uploaded_file.name):
                 st.success("✅ Документ добавлен в базу!")
+                if auto_extract_superset:
+                    try:
+                        conn_chk = get_db_connection()
+                        cur_chk = conn_chk.cursor()
+                        cur_chk.execute("SELECT id FROM reports WHERE filename = ? ORDER BY id DESC LIMIT 1", (uploaded_file.name,))
+                        r_row = cur_chk.fetchone()
+                        conn_chk.close()
+                        if r_row:
+                            from dashboard_generator.core.data_extractor import PDFDataExtractor
+                            prov = "gemini" if st.session_state.get("gemini_api_key") or os.getenv("GEMINI_API_KEY") else "local"
+                            extractor = PDFDataExtractor(provider=prov)
+                            ext_res = extractor.extract_from_report(r_row[0])
+                            if ext_res.success and ext_res.results_by_table:
+                                st.info(f"📊 Модель извлекла данные для Superset: обновлено витрин: {len(ext_res.results_by_table)}.")
+                    except Exception as exc:
+                        print(f"Ошибка автоматического извлечения в PostgreSQL: {exc}")
                 st.rerun()
             else:
                 st.error("❌ Ошибка при обработке документа.")
@@ -345,25 +366,72 @@ with tab_superset:
         if st.button("🔄 Обновить статус", help="Проверить подключение к Superset и базе данных"):
             st.rerun()
 
-    # Если PostgreSQL онлайн, но в таблицах нет данных
-    if pg_ok and not check_postgres_has_data():
-        st.warning("⚠️ **В базе данных PostgreSQL отсутствуют данные витрин.** Из-за этого дашборды в Superset строятся с пустыми графиками («No data»).")
-        if st.button("📥 Заполнить витрины данными из отчетов ВПО и НИОКР", type="primary", use_container_width=True):
-            from scripts.init_postgres_analytics import init_analytics_database
-            with st.spinner("Наполнение таблиц показателями отчетов..."):
-                if init_analytics_database():
-                    st.success("✅ База данных успешно наполнена данными! Теперь дашборды будут отображать реальные графики.")
-                    st.rerun()
-                else:
-                    st.error("❌ Ошибка при наполнении базы данных.")
-    elif pg_ok:
-        with st.expander("🛠️ Управление аналитическими витринами"):
-            if st.button("🔄 Перезаполнить / сбросить данные отчетов в PostgreSQL"):
+    # ── Блок наполнения витрин данными из PDF через модель ──
+    with st.expander("🤖 Наполнение базы данных показателями из загруженных PDF (через LLM)", expanded=(pg_ok and not pg_has_data)):
+        st.markdown(
+            "Модель анализирует таблицы в загруженном отчёте, сопоставляет их со схемами витрин PostgreSQL "
+            "(`students_faculty_form`, `stipend_fund`, `rnd_funding_sources` и др.), нормализует числовые показатели "
+            "и наполняет базу данных для построения интерактивных дашбордов Superset."
+        )
+
+        conn_r = get_db_connection()
+        pdf_reports_df = pd.read_sql_query(
+            "SELECT id, filename, report_year FROM reports ORDER BY upload_date DESC",
+            conn_r,
+        )
+        conn_r.close()
+
+        if not pdf_reports_df.empty:
+            report_dict = {
+                f"{row['filename']} ({row['report_year']})": row["id"]
+                for _, row in pdf_reports_df.iterrows()
+            }
+            col_rep, col_ext_btn = st.columns([5, 3])
+            with col_rep:
+                chosen_report_label = st.selectbox(
+                    "Выберите отчёт для извлечения данных:",
+                    list(report_dict.keys()),
+                    key="extract_pdf_report_select",
+                )
+                chosen_report_id = report_dict[chosen_report_label]
+            with col_ext_btn:
+                st.write("")
+                run_extract_btn = st.button("🚀 Извлечь показатели в БД", type="primary", use_container_width=True)
+
+            if run_extract_btn:
+                with st.status(f"🛠️ Модель извлекает данные из «{chosen_report_label}»...", expanded=True) as ext_status:
+                    ext_log_box = st.empty()
+                    ext_logs = []
+                    def on_ext_log(m: str):
+                        ext_logs.append(m)
+                        ext_log_box.markdown("\n\n".join(ext_logs))
+
+                    from dashboard_generator.core.data_extractor import PDFDataExtractor
+                    prov = "gemini" if selected_provider == "Облачные модели" else "local"
+                    g_key = st.session_state.get("gemini_api_key", env_gemini_key) if prov == "gemini" else None
+                    g_model = model_name if prov == "gemini" else None
+
+                    extractor = PDFDataExtractor(provider=prov, gemini_key=g_key, gemini_model=g_model)
+                    res = extractor.extract_from_report(chosen_report_id, progress_callback=on_ext_log)
+
+                    if res.success and res.results_by_table:
+                        ext_status.update(label=f"✅ Успешно обновлено витрин: {len(res.results_by_table)}!", state="complete")
+                        st.success(f"Показатели из документа «{chosen_report_label}» успешно загружены в витрины PostgreSQL!")
+                        st.rerun()
+                    elif res.success:
+                        ext_status.update(label="ℹ️ В документе не найдено подходящих аналитических таблиц", state="complete")
+                    else:
+                        ext_status.update(label="❌ Ошибка извлечения", state="error")
+                        st.error(res.error_message)
+
+            if st.button("🔄 Сбросить и заполнить эталонными демо-данными (ВПО + НИОКР)"):
                 from scripts.init_postgres_analytics import init_analytics_database
                 with st.spinner("Перезаполнение аналитических таблиц..."):
                     if init_analytics_database():
-                        st.success("✅ Данные витрин успешно обновлены!")
+                        st.success("✅ Данные витрин успешно сброшены и наполнены!")
                         st.rerun()
+        else:
+            st.info("ℹ️ В системе пока нет загруженных PDF-отчетов. Загрузите отчет на панели слева.")
 
     if not superset_ok or not pg_ok:
         with st.expander("ℹ️ Как запустить Apache Superset и аналитическую базу"):
