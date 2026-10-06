@@ -1,7 +1,7 @@
 import os
 import streamlit as st
-import sqlite3
 import pandas as pd
+from db import get_db_connection
 
 try:
     from dotenv import load_dotenv
@@ -36,27 +36,28 @@ def check_superset_online() -> bool:
 from dashboard_generator.core.db_introspect import check_postgres_online, check_postgres_has_data
 
 
-def get_db_connection():
-    """Возвращает новое соединение с базой данных reports.db."""
-    return sqlite3.connect("reports.db")
-
-
 def init_db_checks() -> bool:
-    """Проверяет, существует ли таблица reports в базе данных.
+    """Проверяет, существует ли таблица reports в базе данных PostgreSQL.
     Возвращает True, если таблица найдена, иначе False."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='reports'")
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'reports'"
+        )
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception:
+        return False
 
 
 def delete_report(report_id: int):
     """Удаляет запись об отчёте из таблицы reports по его идентификатору.
     Все связанные чанки, таблицы и разделы удаляются каскадно (ON DELETE CASCADE)."""
     conn = get_db_connection()
-    conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM reports WHERE id = %s", (report_id,))
     conn.commit()
     conn.close()
 
@@ -100,7 +101,7 @@ with st.sidebar:
                     try:
                         conn_chk = get_db_connection()
                         cur_chk = conn_chk.cursor()
-                        cur_chk.execute("SELECT id FROM reports WHERE filename = ? ORDER BY id DESC LIMIT 1", (uploaded_file.name,))
+                        cur_chk.execute("SELECT id FROM reports WHERE filename = %s ORDER BY id DESC LIMIT 1", (uploaded_file.name,))
                         r_row = cur_chk.fetchone()
                         conn_chk.close()
                         if r_row:
@@ -201,10 +202,11 @@ with tab_chat:
         st.info("👈 Выберите один или несколько документов в боковой панели для анализа в чате.")
     else:
         conn = get_db_connection()
+        placeholders = ','.join(['%s'] * len(active_ids))
         active_names = pd.read_sql_query(
-            f"SELECT filename FROM reports WHERE id IN ({','.join('?' * len(active_ids))})",
+            f"SELECT filename FROM reports WHERE id IN ({placeholders})",
             conn,
-            params=active_ids,
+            params=tuple(active_ids),
         )
         conn.close()
         names_str = ", ".join(active_names["filename"].tolist())

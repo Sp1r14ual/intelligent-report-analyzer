@@ -1,6 +1,6 @@
 import os
 import re
-import sqlite3
+import psycopg2
 
 try:
     import pymupdf as fitz
@@ -8,6 +8,7 @@ except ImportError:
     import fitz  # PyMuPDF
 from docling.document_converter import DocumentConverter
 from embedding_manager import create_embedding
+from db import get_db_connection, init_document_schema
 
 
 # ── Утилиты ───────────────────────────────────────────────────────────────────
@@ -119,69 +120,24 @@ def extract_sections(md_text: str):
 
 # ── Схема БД ──────────────────────────────────────────────────────────────────
 
-def _ensure_schema(cursor: sqlite3.Cursor) -> None:
-    """Создаёт все необходимые таблицы в базе данных, если они ещё не существуют:
-    reports, document_chunks, document_tables, sections.
-    Также добавляет колонку embedding в document_chunks при её отсутствии (миграция)."""
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename    TEXT,
-            report_year INTEGER,
-            upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS document_chunks (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_id   INTEGER,
-            chunk_order INTEGER,
-            chunk_text  TEXT,
-            has_tables  INTEGER DEFAULT 0,
-            embedding   BLOB,
-            FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS document_tables (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_id   INTEGER,
-            chunk_order INTEGER,
-            table_text  TEXT,
-            embedding   BLOB,
-            FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sections (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_id       INTEGER,
-            section_number  TEXT,
-            section_title   TEXT,
-            chunk_order     INTEGER,
-            FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE document_chunks ADD COLUMN embedding BLOB")
-    except sqlite3.OperationalError:
-        pass
+def _ensure_schema(conn) -> None:
+    """Создаёт все необходимые таблицы в PostgreSQL, если они ещё не существуют."""
+    init_document_schema(conn)
 
 
 # ── Основная функция ──────────────────────────────────────────────────────────
 
 def process_document(file_path: str, year: int, original_filename: str) -> bool:
-    """Обрабатывает PDF-документ и сохраняет его содержимое в базу данных.
+    """Обрабатывает PDF-документ и сохраняет его содержимое в базу данных PostgreSQL.
     Разбивает документ на чанки по 3 страницы с перекрытием в 1 страницу,
     конвертирует каждый чанк в Markdown через Docling (с fallback на fitz),
     извлекает таблицы и разделы, создаёт эмбеддинги и записывает всё в БД.
     При любой критической ошибке откатывает запись об отчёте из таблицы reports.
     Временные PDF-файлы чанков удаляются в блоке finally.
     Возвращает True при успехе, False при ошибке."""
-    conn = sqlite3.connect("reports.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
-    _ensure_schema(cursor)
-    conn.commit()
+    _ensure_schema(conn)
 
     report_id: int | None = None
     temp_files: list[str] = []
@@ -250,16 +206,19 @@ def process_document(file_path: str, year: int, original_filename: str) -> bool:
             return False
 
         cursor.execute(
-            "INSERT INTO reports (filename, report_year) VALUES (?, ?)",
+            "INSERT INTO reports (filename, report_year) VALUES (%s, %s) RETURNING id",
             (original_filename, year),
         )
-        report_id = cursor.lastrowid
+        report_id = cursor.fetchone()[0]
 
         cursor.executemany(
             "INSERT INTO document_chunks "
             "(report_id, chunk_order, chunk_text, has_tables, embedding) "
-            "VALUES (?, ?, ?, ?, ?)",
-            [(report_id, order, text, has_tbl, emb) for order, text, has_tbl, emb in temp_chunks],
+            "VALUES (%s, %s, %s, %s, %s)",
+            [
+                (report_id, order, text, has_tbl, psycopg2.Binary(emb) if emb else None)
+                for order, text, has_tbl, emb in temp_chunks
+            ],
         )
 
         # Сохранение таблиц
@@ -272,14 +231,14 @@ def process_document(file_path: str, year: int, original_filename: str) -> bool:
                 cursor.execute(
                     "INSERT INTO document_tables "
                     "(report_id, chunk_order, table_text, embedding) "
-                    "VALUES (?, ?, ?, ?)",
-                    (report_id, order, table_text, table_embedding),
+                    "VALUES (%s, %s, %s, %s)",
+                    (report_id, order, table_text, psycopg2.Binary(table_embedding) if table_embedding else None),
                 )
 
         cursor.executemany(
             "INSERT INTO sections "
             "(report_id, section_number, section_title, chunk_order) "
-            "VALUES (?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s)",
             [
                 (report_id, sec_num, sec_title, chunk_order)
                 for sec_num, sec_title, chunk_order in temp_sections
@@ -297,7 +256,7 @@ def process_document(file_path: str, year: int, original_filename: str) -> bool:
     except Exception as exc:
         print(f"❌ Критическая ошибка при обработке '{original_filename}': {exc}")
         if report_id is not None:
-            cursor.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+            cursor.execute("DELETE FROM reports WHERE id = %s", (report_id,))
             conn.commit()
         return False
 

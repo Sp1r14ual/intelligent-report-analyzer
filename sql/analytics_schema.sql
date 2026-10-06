@@ -257,3 +257,44 @@ BEGIN
     END IF;
 END $$;
 
+
+-- ====================================================================
+-- Таблицы хранения документов для системы RAG и анализа отчетов
+-- ====================================================================
+
+CREATE TABLE IF NOT EXISTS reports (
+    id          SERIAL PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    report_year INTEGER,
+    upload_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id          SERIAL PRIMARY KEY,
+    report_id   INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    chunk_order INTEGER NOT NULL,
+    chunk_text  TEXT NOT NULL,
+    has_tables  INTEGER DEFAULT 0,
+    embedding   BYTEA
+);
+
+CREATE TABLE IF NOT EXISTS document_tables (
+    id          SERIAL PRIMARY KEY,
+    report_id   INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    chunk_order INTEGER NOT NULL,
+    table_text  TEXT NOT NULL,
+    embedding   BYTEA
+);
+
+CREATE TABLE IF NOT EXISTS sections (
+    id              SERIAL PRIMARY KEY,
+    report_id       INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    section_number  TEXT,
+    section_title   TEXT,
+    chunk_order     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_chunks_report ON document_chunks(report_id, chunk_order);
+CREATE INDEX IF NOT EXISTS idx_document_tables_report ON document_tables(report_id, chunk_order);
+CREATE INDEX IF NOT EXISTS idx_sections_report ON sections(report_id);
+

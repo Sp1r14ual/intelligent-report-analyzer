@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import sqlite3
 import psycopg2
 from psycopg2.extras import execute_values
 from typing import Optional, Callable, Dict, Any, List
@@ -363,39 +362,51 @@ class PDFDataExtractor:
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> ReportExtractionResult:
         """
-        Извлекает таблицы отчета из SQLite reports.db, передает их LLM для структурирования
+        Извлекает таблицы отчета из PostgreSQL (document_tables), передает их LLM для структурирования
         и наполняет целевые таблицы PostgreSQL analytics.*
         """
         def log(msg: str):
             if progress_callback:
                 progress_callback(msg)
 
-        log(f"🔎 Чтение таблиц отчета (ID: {report_id}) из локальной базы данных...")
+        log(f"🔎 Чтение таблиц отчета (ID: {report_id}) из базы данных...")
 
-        conn_sq = sqlite3.connect("reports.db")
-        cur_sq = conn_sq.cursor()
-        cur_sq.execute("SELECT filename, report_year FROM reports WHERE id = ?", (report_id,))
-        rep_row = cur_sq.fetchone()
-        if not rep_row:
-            conn_sq.close()
+        try:
+            pg_conn = get_postgres_connection()
+            pg_conn.autocommit = True
+            pg_cur = pg_conn.cursor()
+        except Exception as exc:
             return ReportExtractionResult(
                 report_id=report_id,
                 report_filename="Unknown",
                 report_year=2025,
                 tables_processed=0,
                 success=False,
-                error_message=f"Отчет с ID {report_id} не найден в reports.db",
+                error_message=f"Не удалось подключиться к PostgreSQL: {exc}",
+            )
+
+        pg_cur.execute("SELECT filename, report_year FROM reports WHERE id = %s", (report_id,))
+        rep_row = pg_cur.fetchone()
+        if not rep_row:
+            pg_conn.close()
+            return ReportExtractionResult(
+                report_id=report_id,
+                report_filename="Unknown",
+                report_year=2025,
+                tables_processed=0,
+                success=False,
+                error_message=f"Отчет с ID {report_id} не найден в базе данных",
             )
 
         filename, year = rep_row
-        cur_sq.execute(
-            "SELECT id, table_text FROM document_tables WHERE report_id = ? ORDER BY chunk_order ASC",
+        pg_cur.execute(
+            "SELECT id, table_text FROM document_tables WHERE report_id = %s ORDER BY chunk_order ASC",
             (report_id,),
         )
-        tables = cur_sq.fetchall()
-        conn_sq.close()
+        tables = pg_cur.fetchall()
 
         if not tables:
+            pg_conn.close()
             return ReportExtractionResult(
                 report_id=report_id,
                 report_filename=filename,
@@ -406,20 +417,6 @@ class PDFDataExtractor:
             )
 
         log(f"📄 Отчет «{filename}»: найдено {len(tables)} таблиц для анализа.")
-
-        try:
-            pg_conn = get_postgres_connection()
-            pg_conn.autocommit = True
-            pg_cur = pg_conn.cursor()
-        except Exception as exc:
-            return ReportExtractionResult(
-                report_id=report_id,
-                report_filename=filename,
-                report_year=year or 2025,
-                tables_processed=len(tables),
-                success=False,
-                error_message=f"Не удалось подключиться к PostgreSQL: {exc}",
-            )
 
         result_summary: dict[str, TableExtractionResult] = {}
         processed_count = 0

@@ -1,5 +1,4 @@
 import re
-import sqlite3
 import os
 import requests
 import streamlit as st
@@ -13,6 +12,7 @@ except ImportError:
 from table_retriever import TableRetriever
 from reranker import get_reranker
 from retriever import FaissRetriever, extract_section_fragment
+from db import get_db_connection
 
 
 
@@ -450,15 +450,16 @@ def _collect_context_for_report(report_id, user_query, intent, cursor):
     cursor.execute(
         "SELECT chunk_order, chunk_text, COALESCE(has_tables, 0) "
         "FROM document_chunks "
-        "WHERE report_id = ? "
+        "WHERE report_id = %s "
         "ORDER BY chunk_order",
         (report_id,),
     )
     chunks = cursor.fetchall()
 
-    row = cursor.execute(
-        "SELECT filename FROM reports WHERE id = ?", (report_id,)
-    ).fetchone()
+    cursor.execute(
+        "SELECT filename FROM reports WHERE id = %s", (report_id,)
+    )
+    row = cursor.fetchone()
     report_name = row[0] if row else str(report_id)
 
     if intent == "STRUCTURE":
@@ -563,7 +564,7 @@ def get_analysis_from_yandexgpt(llm, report_ids, user_query):
     Возвращает финальный текст ответа."""
     intent = get_intent(llm, user_query)
 
-    conn = sqlite3.connect("reports.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
     contexts = []
 

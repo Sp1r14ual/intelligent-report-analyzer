@@ -1,13 +1,10 @@
-import sqlite3
-from docling_parser import _ensure_schema
+from db import get_db_connection, init_document_schema
 
 def create_structure():
-    conn = sqlite3.connect("reports.db")
-    cursor = conn.cursor()
-    _ensure_schema(cursor)
-    conn.commit()
+    conn = get_db_connection()
+    init_document_schema(conn)
     conn.close()
-    print("Database initialized successfully with all tables (reports, chunks, tables, sections).")
+    print("PostgreSQL document schema initialized successfully (reports, chunks, tables, sections).")
 
 if __name__ == "__main__":
     create_structure()

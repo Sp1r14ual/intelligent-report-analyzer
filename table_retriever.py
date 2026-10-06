@@ -1,9 +1,8 @@
-import sqlite3
-
 import faiss
 import numpy as np
 
 from embedding_manager import get_embedder, bytes_to_vector
+from db import get_db_connection
 
 
 class TableRetriever:
@@ -20,7 +19,7 @@ class TableRetriever:
     def load(self):
         """Загружает все записи из таблицы document_tables (только с эмбеддингами)
         и строит FAISS-индекс IndexFlatIP для поиска по косинусному сходству."""
-        conn = sqlite3.connect("reports.db")
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT report_id, chunk_order, table_text, embedding
