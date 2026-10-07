@@ -83,5 +83,45 @@ services:
       retries: 6
       start_period: 40s
 
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: diploma_llama
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    command:
+      - "-m"
+      - "/models/YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-c"
+      - "8192"
+      - "-ngl"
+      - "0"
+
+  analyzer:
+    build: .
+    container_name: diploma_analyzer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llama:
+        condition: service_started
+    ports:
+      - "8501:8501"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: analytics_db
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: superset
+      SUPERSET_URL: http://superset:8088
+      LLM_BASE_URL: http://llama:8080
+
 volumes:
   pgdata:

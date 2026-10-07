@@ -83,18 +83,15 @@ class LLMClient:
         """Проверяет доступность сервера llama-server и определяет имя запущенной модели."""
         for candidate_url in self._get_candidate_urls():
             try:
-                resp = requests.get(f"{candidate_url}/props", timeout=1.5)
+                resp = requests.get(f"{candidate_url}/health", timeout=2.5)
                 if resp.status_code == 200:
                     self.base_url = candidate_url
-                    data = resp.json()
-                    raw_path = data.get("model_path", "")
-                    name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else "YandexGPT 5 Lite 8B"
-                    return {"online": True, "model": name}
+                    return {"online": True, "model": self.model_name or "YandexGPT 5 Lite 8B"}
             except Exception:
                 pass
 
             try:
-                resp = requests.get(f"{candidate_url}/v1/models", timeout=1.5)
+                resp = requests.get(f"{candidate_url}/v1/models", timeout=2.5)
                 if resp.status_code == 200:
                     self.base_url = candidate_url
                     data = resp.json()
@@ -103,6 +100,17 @@ class LLMClient:
                         raw_id = models_data[0].get("id", "")
                         name = os.path.basename(raw_id.replace("\\", "/")) if raw_id else "YandexGPT 5 Lite 8B"
                         return {"online": True, "model": name}
+            except Exception:
+                pass
+
+            try:
+                resp = requests.get(f"{candidate_url}/props", timeout=2.5)
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    raw_path = data.get("model_path", "")
+                    name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else "YandexGPT 5 Lite 8B"
+                    return {"online": True, "model": name}
             except Exception:
                 pass
 

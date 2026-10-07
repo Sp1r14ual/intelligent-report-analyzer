@@ -1,0 +1,9 @@
+.venv
+venv
+__pycache__
+*.pyc
+.git
+.gitignore
+reports.db
+reports.db.bak
+.env
