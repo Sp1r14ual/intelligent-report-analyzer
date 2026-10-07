@@ -38,6 +38,21 @@ def get_wsl_host_ip() -> str | None:
     return None
 
 
+def get_docker_gateway_ip() -> str | None:
+    """Извлекает IP шлюза хоста из таблицы маршрутизации Linux внутри Docker-контейнера."""
+    try:
+        if os.path.exists("/proc/net/route"):
+            with open("/proc/net/route", "r") as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if len(fields) >= 3 and fields[1] == "00000000":
+                        hex_ip = fields[2]
+                        return ".".join(str(int(hex_ip[i:i+2], 16)) for i in (6, 4, 2, 0))
+    except Exception:
+        pass
+    return None
+
+
 class LLMClient:
     """Клиент для взаимодействия с локальным сервером YandexGPT:
     1) HTTP llama-server (OpenAI-compatible /v1/completions или /completion)
@@ -66,17 +81,29 @@ class LLMClient:
                 self._llama_instance = None
 
     def _get_candidate_urls(self) -> list[str]:
-        """Возвращает список URL для подключения с учетом возможного хоста Windows из WSL2."""
+        """Возвращает список URL для подключения с учетом Docker-сети, хоста Docker и WSL2."""
         urls = [self.base_url]
-        if "127.0.0.1" in self.base_url or "localhost" in self.base_url:
-            host_ip = get_wsl_host_ip()
-            if host_ip:
-                import urllib.parse
-                parsed = urllib.parse.urlparse(self.base_url)
-                port = parsed.port or 8080
-                wsl_url = f"http://{host_ip}:{port}"
-                if wsl_url not in urls:
-                    urls.append(wsl_url)
+        import urllib.parse
+        parsed = urllib.parse.urlparse(self.base_url)
+        port = parsed.port or 8080
+
+        # Добавляем fallback-адреса (хост Docker и локальные интерфейсы)
+        fallbacks = [
+            f"http://host.docker.internal:{port}",
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+        ]
+        gw_ip = get_docker_gateway_ip()
+        if gw_ip:
+            fallbacks.append(f"http://{gw_ip}:{port}")
+
+        host_ip = get_wsl_host_ip()
+        if host_ip:
+            fallbacks.append(f"http://{host_ip}:{port}")
+
+        for fb in fallbacks:
+            if fb not in urls:
+                urls.append(fb)
         return urls
 
     def get_server_info(self) -> dict:
@@ -87,7 +114,7 @@ class LLMClient:
                 if resp.status_code == 200:
                     self.base_url = candidate_url
                     return {"online": True, "model": self.model_name or "YandexGPT 5 Lite 8B"}
-            except Exception:
+            except Exception as e:
                 pass
 
             try:
@@ -147,9 +174,9 @@ class LLMClient:
                     if "choices" in data and len(data["choices"]) > 0:
                         return data
                 else:
-                    print(f"[LLMClient] /v1/completions HTTP {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.RequestException:
-                pass
+                    print(f"[LLMClient] {candidate_url}/v1/completions HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException as exc:
+                print(f"[LLMClient] Ошибка обращения к {candidate_url}/v1/completions: {exc}")
 
             try:
                 resp = requests.post(f"{candidate_url}/completion", json=payload, timeout=240)
@@ -159,9 +186,9 @@ class LLMClient:
                     text = data.get("content", "")
                     return {"choices": [{"text": text}]}
                 else:
-                    print(f"[LLMClient] /completion HTTP {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.RequestException:
-                pass
+                    print(f"[LLMClient] {candidate_url}/completion HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException as exc:
+                print(f"[LLMClient] Ошибка обращения к {candidate_url}/completion: {exc}")
 
         # 3. Сообщение пользователю, если сервер модели ещё не запущен
         return {

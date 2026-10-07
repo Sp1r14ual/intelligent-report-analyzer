@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: diploma_postgres
+    container_name: postgres_container
     restart: unless-stopped
     environment:
       POSTGRES_DB: analytics_db
@@ -20,7 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: diploma_redis
+    container_name: redis_container
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -32,7 +32,7 @@ services:
 
   superset-init:
     image: apache/superset:3.1.3
-    container_name: diploma_superset_init
+    container_name: superset_init_container
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,7 +57,7 @@ services:
 
   superset:
     image: apache/superset:3.1.3
-    container_name: diploma_superset
+    container_name: superset_container
     restart: unless-stopped
     depends_on:
       superset-init:
@@ -82,10 +82,10 @@ services:
       timeout: 10s
       retries: 6
       start_period: 40s
-
+  
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server
-    container_name: diploma_llama
+    container_name: llama_container
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -101,19 +101,23 @@ services:
       - "-c"
       - "8192"
       - "-ngl"
-      - "0"
+      - "18"
 
-  analyzer:
+  app:
     build: .
-    container_name: diploma_analyzer
+    container_name: app_container
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       llama:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "8501:8501"
+    volumes:
+      - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -121,6 +125,7 @@ services:
       POSTGRES_USER: superset
       POSTGRES_PASSWORD: superset
       SUPERSET_URL: http://superset:8088
+      SUPERSET_PUBLIC_URL: http://localhost:8088
       LLM_BASE_URL: http://llama:8080
 
 volumes:

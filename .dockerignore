@@ -7,3 +7,8 @@ __pycache__
 reports.db
 reports.db.bak
 .env
+models/
+*.gguf
+*.bin
+*.zip
+*.tar.gz
