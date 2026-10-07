@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================================"
-echo "  Starting llama-server for local LLM (Linux / WSL)    "
+echo "  Starting llama-server for YandexGPT 5 Lite 8B (WSL)    "
 echo "========================================================"
 
 PORT=8080
@@ -31,13 +31,9 @@ fi
 # Нормализация путей из Windows в Linux
 MODEL_PATH=$(echo "$MODEL_PATH" | tr '\\' '/')
 
-# 3. Выбор по умолчанию
+# 3. Выбор по умолчанию (YandexGPT 5 Lite 8B)
 if [ -z "$MODEL_PATH" ]; then
-    if [ -f "models/YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf" ]; then
-        MODEL_PATH="models/YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
-    elif [ -f "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf" ]; then
-        MODEL_PATH="models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-    fi
+    MODEL_PATH="models/YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
 fi
 
 if [ ! -f "$MODEL_PATH" ]; then
@@ -93,5 +89,10 @@ echo "Context:     $CTX"
 echo "Host:        0.0.0.0 (Accessible from Windows at http://127.0.0.1:$PORT)"
 echo ""
 
-exec "$LLAMA_BIN" -m "$MODEL_PATH" --host 0.0.0.0 --port "$PORT" -c "$CTX" -ngl "$NGL" -np 1
+if [[ "$LLAMA_BIN" == *.exe ]]; then
+    WIN_MODEL=$(wslpath -w "$MODEL_PATH" 2>/dev/null || echo "$MODEL_PATH" | tr '/' '\\')
+    exec "$LLAMA_BIN" -m "$WIN_MODEL" --host 0.0.0.0 --port "$PORT" -c "$CTX" -ngl "$NGL" -np 1
+else
+    exec "$LLAMA_BIN" -m "$MODEL_PATH" --host 0.0.0.0 --port "$PORT" -c "$CTX" -ngl "$NGL" -np 1
+fi
 

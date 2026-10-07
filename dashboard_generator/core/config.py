@@ -16,6 +16,12 @@ except ImportError:
 
 class Settings(BaseModel):
     superset_url: str = Field(default_factory=lambda: os.getenv("SUPERSET_URL", "http://localhost:8088").rstrip("/"))
+    superset_public_url: str = Field(
+        default_factory=lambda: os.getenv(
+            "SUPERSET_PUBLIC_URL",
+            os.getenv("SUPERSET_URL", "http://localhost:8088").replace("://superset:", "://localhost:")
+        ).rstrip("/")
+    )
     superset_username: str = Field(default_factory=lambda: os.getenv("SUPERSET_USERNAME", "admin"))
     superset_password: str = Field(default_factory=lambda: os.getenv("SUPERSET_PASSWORD", "admin"))
 

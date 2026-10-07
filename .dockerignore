@@ -1,0 +1,14 @@
+.venv
+venv
+__pycache__
+*.pyc
+.git
+.gitignore
+reports.db
+reports.db.bak
+.env
+models/
+*.gguf
+*.bin
+*.zip
+*.tar.gz

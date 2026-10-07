@@ -1,5 +1,4 @@
 import re
-import sqlite3
 import os
 import requests
 import streamlit as st
@@ -13,6 +12,7 @@ except ImportError:
 from table_retriever import TableRetriever
 from reranker import get_reranker
 from retriever import FaissRetriever, extract_section_fragment
+from db import get_db_connection
 
 
 
@@ -38,17 +38,31 @@ def get_wsl_host_ip() -> str | None:
     return None
 
 
+def get_docker_gateway_ip() -> str | None:
+    """Извлекает IP шлюза хоста из таблицы маршрутизации Linux внутри Docker-контейнера."""
+    try:
+        if os.path.exists("/proc/net/route"):
+            with open("/proc/net/route", "r") as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if len(fields) >= 3 and fields[1] == "00000000":
+                        hex_ip = fields[2]
+                        return ".".join(str(int(hex_ip[i:i+2], 16)) for i in (6, 4, 2, 0))
+    except Exception:
+        pass
+    return None
+
+
 class LLMClient:
-    """Универсальный клиент для взаимодействия с LLM:
+    """Клиент для взаимодействия с локальным сервером YandexGPT:
     1) HTTP llama-server (OpenAI-compatible /v1/completions или /completion)
-    2) HTTP Ollama (/api/generate)
-    3) Локальный llama-cpp-python (если библиотека установлена)
-    4) Безопасная заглушка (если сервер ещё не запущен, чтобы интерфейс не падал)."""
+    2) Локальный llama-cpp-python (если библиотека установлена)
+    3) Безопасная заглушка (если сервер ещё не запущен, чтобы интерфейс не падал)."""
 
     def __init__(self, base_url: str = "http://127.0.0.1:8080", gguf_path: str | None = None, model_name: str | None = None):
         self.base_url = os.getenv("LLM_BASE_URL", base_url).rstrip("/")
         self.gguf_path = gguf_path
-        self.model_name = model_name or (os.path.basename(gguf_path) if gguf_path else "Локальная модель")
+        self.model_name = model_name or (os.path.basename(gguf_path) if gguf_path else "YandexGPT 5 Lite 8B")
         self._llama_instance = None
 
         if self.gguf_path and os.path.exists(self.gguf_path):
@@ -67,43 +81,63 @@ class LLMClient:
                 self._llama_instance = None
 
     def _get_candidate_urls(self) -> list[str]:
-        """Возвращает список URL для подключения с учетом возможного хоста Windows из WSL2."""
+        """Возвращает список URL для подключения с учетом Docker-сети, хоста Docker и WSL2."""
         urls = [self.base_url]
-        if "127.0.0.1" in self.base_url or "localhost" in self.base_url:
-            host_ip = get_wsl_host_ip()
-            if host_ip:
-                import urllib.parse
-                parsed = urllib.parse.urlparse(self.base_url)
-                port = parsed.port or 8080
-                wsl_url = f"http://{host_ip}:{port}"
-                if wsl_url not in urls:
-                    urls.append(wsl_url)
+        import urllib.parse
+        parsed = urllib.parse.urlparse(self.base_url)
+        port = parsed.port or 8080
+
+        # Добавляем fallback-адреса (хост Docker и локальные интерфейсы)
+        fallbacks = [
+            f"http://host.docker.internal:{port}",
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+        ]
+        gw_ip = get_docker_gateway_ip()
+        if gw_ip:
+            fallbacks.append(f"http://{gw_ip}:{port}")
+
+        host_ip = get_wsl_host_ip()
+        if host_ip:
+            fallbacks.append(f"http://{host_ip}:{port}")
+
+        for fb in fallbacks:
+            if fb not in urls:
+                urls.append(fb)
         return urls
 
     def get_server_info(self) -> dict:
         """Проверяет доступность сервера llama-server и определяет имя запущенной модели."""
         for candidate_url in self._get_candidate_urls():
             try:
-                resp = requests.get(f"{candidate_url}/props", timeout=1.5)
+                resp = requests.get(f"{candidate_url}/health", timeout=2.5)
                 if resp.status_code == 200:
                     self.base_url = candidate_url
-                    data = resp.json()
-                    raw_path = data.get("model_path", "")
-                    name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else "Online"
-                    return {"online": True, "model": name}
-            except Exception:
+                    return {"online": True, "model": self.model_name or "YandexGPT 5 Lite 8B"}
+            except Exception as e:
                 pass
 
             try:
-                resp = requests.get(f"{candidate_url}/v1/models", timeout=1.5)
+                resp = requests.get(f"{candidate_url}/v1/models", timeout=2.5)
                 if resp.status_code == 200:
                     self.base_url = candidate_url
                     data = resp.json()
                     models_data = data.get("data", [])
                     if models_data:
                         raw_id = models_data[0].get("id", "")
-                        name = os.path.basename(raw_id.replace("\\", "/")) if raw_id else "Online"
+                        name = os.path.basename(raw_id.replace("\\", "/")) if raw_id else "YandexGPT 5 Lite 8B"
                         return {"online": True, "model": name}
+            except Exception:
+                pass
+
+            try:
+                resp = requests.get(f"{candidate_url}/props", timeout=2.5)
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    raw_path = data.get("model_path", "")
+                    name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else "YandexGPT 5 Lite 8B"
+                    return {"online": True, "model": name}
             except Exception:
                 pass
 
@@ -140,9 +174,9 @@ class LLMClient:
                     if "choices" in data and len(data["choices"]) > 0:
                         return data
                 else:
-                    print(f"[LLMClient] /v1/completions HTTP {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.RequestException:
-                pass
+                    print(f"[LLMClient] {candidate_url}/v1/completions HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException as exc:
+                print(f"[LLMClient] Ошибка обращения к {candidate_url}/v1/completions: {exc}")
 
             try:
                 resp = requests.post(f"{candidate_url}/completion", json=payload, timeout=240)
@@ -152,39 +186,19 @@ class LLMClient:
                     text = data.get("content", "")
                     return {"choices": [{"text": text}]}
                 else:
-                    print(f"[LLMClient] /completion HTTP {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.RequestException:
-                pass
+                    print(f"[LLMClient] {candidate_url}/completion HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException as exc:
+                print(f"[LLMClient] Ошибка обращения к {candidate_url}/completion: {exc}")
 
-        # 3. Обращение к Ollama (порт 11434)
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-        try:
-            ollama_payload = {
-                "model": os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                },
-            }
-            resp = requests.post(f"{ollama_url}/api/generate", json=ollama_payload, timeout=180)
-            if resp.status_code == 200:
-                text = resp.json().get("response", "")
-                return {"choices": [{"text": text}]}
-        except requests.exceptions.RequestException:
-            pass
-
-        # 4. Сообщение пользователю, если сервер модели ещё не запущен
+        # 3. Сообщение пользователю, если сервер модели ещё не запущен
         return {
             "choices": [{
                 "text": (
                     "###ОТВЕТ###\n"
                     "⚠️ **Сервер языковой модели не отвечает.**\n\n"
-                    f"Сервис попытался подключиться к `{self.base_url}` и `{ollama_url}`, но соединение не установлено.\n\n"
+                    f"Сервис попытался подключиться к `{self.base_url}`, но соединение не установлено.\n\n"
                     "**Как включить генерацию ответов:**\n"
-                    "1. Запустите локальный сервер `run_llama_server.bat` (он запустит модель Qwen на порту 8080).\n"
-                    "2. Либо запустите Ollama (`ollama run qwen2.5:14b`).\n\n"
+                    "1. Запустите локальный сервер `run_llama_server.bat` (он запустит модель YandexGPT 5 Lite на порту 8080).\n\n"
                     "*Примечание: Загрузка документов, парсинг Docling и семантический поиск по таблицам и чанкам работают независимо от сервера LLM.*"
                 )
             }]
@@ -193,25 +207,16 @@ class LLMClient:
 
 def get_available_local_models() -> list[str]:
     """Возвращает список доступных .gguf моделей из папки models/,
-    отсортированных по приоритету."""
+    фильтруя модель YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf."""
     base = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.path.join(base, "models")
     if not os.path.exists(models_dir):
         return []
 
-    priority = [
-        "YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf",
-        "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-        "Qwen2.5-3B-Instruct-Q5_K_M.gguf",
-        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-    ]
-    files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
-
-    def sort_key(name):
-        return (priority.index(name) if name in priority else 999, name)
-
-    files.sort(key=sort_key)
-    return files
+    target = "YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
+    if os.path.exists(os.path.join(models_dir, target)):
+        return [target]
+    return [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
 
 
 def set_env_local_model(model_filename: str):
@@ -237,128 +242,17 @@ def set_env_local_model(model_filename: str):
 
 @st.cache_resource
 def load_llm(model_name: str | None = None) -> LLMClient:
-    """Загружает или подключает локальную языковую модель (YandexGPT / Qwen) и кэширует клиент."""
+    """Загружает или подключает модель YandexGPT 5 Lite 8B и кэширует клиент."""
     base = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.path.join(base, "models")
 
-    model_path = None
-    if model_name:
-        candidate = os.path.join(models_dir, model_name)
-        if os.path.exists(candidate):
-            model_path = candidate
-
-    if model_path is None:
-        preferred_models = [
-            "YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf",
-            "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-            "Qwen2.5-3B-Instruct-Q5_K_M.gguf",
-            "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-        ]
-        for name in preferred_models:
-            candidate = os.path.join(models_dir, name)
-            if os.path.exists(candidate):
-                model_path = candidate
-                model_name = name
-                break
-
-    if model_path is None and os.path.exists(models_dir):
-        for f in os.listdir(models_dir):
-            if f.endswith(".gguf"):
-                model_path = os.path.join(models_dir, f)
-                model_name = f
-                break
+    target = "YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
+    candidate = os.path.join(models_dir, target)
+    model_path = candidate if os.path.exists(candidate) else None
+    model_name = target
 
     server_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8080")
     return LLMClient(base_url=server_url, gguf_path=model_path, model_name=model_name)
-
-
-class GeminiClient:
-    """Клиент для взаимодействия с Google Gemini API через REST (requests).
-    Полностью совместим с интерфейсом LLMClient:
-    вызов client(prompt, max_tokens, temperature) возвращает {'choices': [{'text': ...}]}
-    """
-
-    def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash", base_url: str | None = None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        self.base_url = (base_url or os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com")).rstrip("/")
-
-    def __call__(self, prompt: str, max_tokens: int = 2048, temperature: float = 0.1, repeat_penalty: float = 1.1) -> dict:
-        key = (self.api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-        if not key:
-            return {
-                "choices": [{
-                    "text": (
-                        "⚠️ **API-ключ Google Gemini не указан.**\n\n"
-                        "Пожалуйста, введите ваш API-ключ в боковой панели Streamlit "
-                        "или сохраните его в файле `.env` в корне проекта (`GEMINI_API_KEY=AIzaSy...`)."
-                    )
-                }]
-            }
-
-        url = f"{self.base_url}/v1beta/models/{self.model}:generateContent?key={key}"
-        payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}]
-                }
-            ],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            }
-        }
-
-        proxies = {}
-        proxy = os.getenv("GEMINI_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
-        if proxy:
-            proxies = {"http": proxy, "https": proxy}
-
-        try:
-            resp = requests.post(url, json=payload, timeout=60, proxies=proxies if proxies else None)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    text = "".join(p.get("text", "") for p in parts)
-                    return {"choices": [{"text": text}]}
-                return {"choices": [{"text": "Модель Gemini вернула пустой ответ."}]}
-
-            err_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            err_msg = err_data.get("error", {}).get("message", resp.text)
-            print(f"[GeminiClient] HTTP {resp.status_code}: {err_msg}")
-
-            if "API_KEY_INVALID" in err_msg or (resp.status_code == 400 and "API key" in err_msg):
-                msg = f"❌ **Недействительный ключ Gemini API:** {err_msg}\n\nПроверьте правильность ключа в Google AI Studio."
-            elif "User location is not supported" in err_msg:
-                msg = (
-                    "⚠️ **Геолокация не поддерживается Google Gemini без VPN/прокси.**\n\n"
-                    "Прямой доступ к API Google ограничен из вашего текущего региона.\n\n"
-                    "**Как решить:**\n"
-                    "1. Включите VPN в системе;\n"
-                    "2. Либо укажите локальный прокси в файле `.env` (`GEMINI_PROXY=http://127.0.0.1:10808`);\n"
-                    "3. Либо переключитесь на `Локальный Qwen (llama-server)` в боковой панели."
-                )
-            elif resp.status_code == 429:
-                msg = "⚠️ **Превышена квота запросов (Rate Limit) к Gemini API.** Подождите минуту и повторите запрос."
-            elif resp.status_code == 404:
-                msg = f"❌ **Модель `{self.model}` не найдена.** Попробуйте выбрать `gemini-1.5-flash` в настройках боковой панели."
-            else:
-                msg = f"❌ **Ошибка Gemini API (HTTP {resp.status_code}):** {err_msg}"
-
-            return {"choices": [{"text": msg}]}
-
-        except requests.exceptions.Timeout:
-            return {"choices": [{"text": "⏱️ **Таймаут соединения с Gemini API (60 секунд).** Проверьте интернет-соединение или VPN."}]}
-        except requests.exceptions.RequestException as e:
-            return {"choices": [{"text": f"🌐 **Сетевая ошибка при обращении к Gemini API:** {e}\n\nЕсли вы находитесь в регионе с ограничениями, может потребоваться VPN или прокси."}]}
-
-
-@st.cache_resource
-def load_gemini_llm(api_key: str | None = None, model: str = "gemini-2.5-flash") -> GeminiClient:
-    """Создаёт и кэширует экземпляр GeminiClient для работы с Google Gemini API."""
-    return GeminiClient(api_key=api_key, model=model)
 
 
 
@@ -591,15 +485,16 @@ def _collect_context_for_report(report_id, user_query, intent, cursor):
     cursor.execute(
         "SELECT chunk_order, chunk_text, COALESCE(has_tables, 0) "
         "FROM document_chunks "
-        "WHERE report_id = ? "
+        "WHERE report_id = %s "
         "ORDER BY chunk_order",
         (report_id,),
     )
     chunks = cursor.fetchall()
 
-    row = cursor.execute(
-        "SELECT filename FROM reports WHERE id = ?", (report_id,)
-    ).fetchone()
+    cursor.execute(
+        "SELECT filename FROM reports WHERE id = %s", (report_id,)
+    )
+    row = cursor.fetchone()
     report_name = row[0] if row else str(report_id)
 
     if intent == "STRUCTURE":
@@ -696,15 +591,15 @@ def _collect_context_for_report(report_id, user_query, intent, cursor):
     return faiss_results_to_context(report_name, results)
 
 
-def get_analysis_from_qwen(llm, report_ids, user_query):
-    """Главная точка входа для анализа запроса пользователя.
+def get_analysis_from_yandexgpt(llm, report_ids, user_query):
+    """Главная точка входа для анализа запроса пользователя через YandexGPT.
     Определяет intent, собирает контекст по каждому из выбранных документов,
     формирует промпт и получает ответ от языковой модели.
     Из сырого вывода удаляет блоки размышлений (<think> и текст до маркера ###ОТВЕТ###).
     Возвращает финальный текст ответа."""
     intent = get_intent(llm, user_query)
 
-    conn = sqlite3.connect("reports.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
     contexts = []
 
@@ -760,5 +655,6 @@ def get_analysis_from_qwen(llm, report_ids, user_query):
     return raw_answer.strip()
 
 
-# Универсальный алиас для вызова анализа
-get_analysis = get_analysis_from_qwen
+# Универсальные алиасы для вызова анализа
+get_analysis = get_analysis_from_yandexgpt
+get_analysis_from_qwen = get_analysis_from_yandexgpt

@@ -31,16 +31,14 @@ class PipelineResult:
 
 def run_pipeline(
     prompt: str,
-    provider: str = "gemini",
-    gemini_key: Optional[str] = None,
-    gemini_model: Optional[str] = None,
     skip_superset_import: bool = False,
     progress_callback: Optional[Callable[[str], None]] = None,
+    **kwargs,
 ) -> PipelineResult:
     """
     Основной конвейер преобразования естественно-языкового запроса в готовый дашборд Superset:
     1. Загрузка семантической модели
-    2. Проверка намерений / вызов LLM
+    2. Проверка намерений / вызов LLM (YandexGPT 5 Lite)
     3. Доменные исправления
     4. Статическая валидация SQL (SQL Guard)
     5. Проверка выполнения запросов в PostgreSQL
@@ -66,20 +64,17 @@ def run_pipeline(
         log(f"❌ {err}")
         return PipelineResult(success=False, logs=logs, error_message=err)
 
-    # 2. Попытка детерминированной генерации через семантический компилятор для локальных моделей
-    is_local_provider = any(k in provider.lower() for k in ["local", "llama", "qwen", "yandex"])
+    # 2. Попытка детерминированной генерации через семантический компилятор для локальной модели
     plan: Optional[DashboardPlan] = None
+    log("🔍 Проверка запроса семантическим компилятором предметной области...")
+    intent_plan = compile_known_intent_plan(prompt)
+    if intent_plan:
+        log(f"✨ Распознано типовое намерение! План '{intent_plan.dashboard_title}' сформирован семантическим компилятором.")
+        plan = intent_plan
 
-    if is_local_provider:
-        log("🔍 Проверка запроса семантическим компилятором (режим для локальных моделей)...")
-        intent_plan = compile_known_intent_plan(prompt)
-        if intent_plan:
-            log(f"✨ Распознано типовое намерение! План '{intent_plan.dashboard_title}' сформирован семантическим компилятором.")
-            plan = intent_plan
-
-    # 3. Если план не был скомпилирован детерминированно, обращаемся к LLM
+    # 3. Если план не был скомпилирован детерминированно, обращаемся к локальной LLM YandexGPT
     if plan is None:
-        log(f"🧠 Запрос к языковой модели ({provider})...")
+        log("🧠 Запрос к языковой модели (YandexGPT 5 Lite)...")
         system_prompt = build_system_prompt(semantic_model)
         user_prompt = build_user_prompt(prompt)
 
@@ -88,14 +83,11 @@ def run_pipeline(
             raw_llm_response = call_llm(
                 system_prompt,
                 user_prompt,
-                provider=provider,
-                gemini_key=gemini_key,
-                gemini_model=gemini_model,
             )
             plan = parse_llm_plan(raw_llm_response)
             log(f"✅ План дашборда «{plan.dashboard_title}» успешно сгенерирован LLM ({len(plan.charts)} чартов).")
         except Exception as exc:
-            log(f"⚠️ Ошибка парсинга ответа LLM: {exc}. Переключение на резервный семантический компилятор...")
+            log(f"⚠️ Ошибка генерации LLM: {exc}. Переключение на резервный семантический компилятор...")
             plan = compile_known_intent_plan(prompt)
             if not plan:
                 err = f"Не удалось получить корректный план ни от LLM, ни от семантического компилятора: {exc}"
@@ -130,23 +122,7 @@ def run_pipeline(
             for err_item in validation_errors:
                 log(f"   • {err_item}")
 
-            if attempt < max_attempts and not is_local_provider:
-                log("🔄 Отправка repair-промпта в LLM для исправления плана...")
-                try:
-                    rep_prompt = build_repair_prompt(plan.model_dump_json(indent=2), validation_errors)
-                    system_prompt = build_system_prompt(semantic_model)
-                    fixed_raw = call_llm(
-                        system_prompt,
-                        rep_prompt,
-                        provider=provider,
-                        gemini_key=gemini_key,
-                        gemini_model=gemini_model,
-                    )
-                    plan = parse_llm_plan(fixed_raw)
-                    plan = repair_known_domain_mistakes(plan, prompt)
-                    continue
-                except Exception as exc:
-                    log(f"⚠️ Ошибка в ходе repair-запроса: {exc}")
+            # Если есть ошибки, переключаемся на семантический компилятор fallback
 
             # Если попытки исчерпаны, переключаемся на семантический компилятор fallback
             log("⚙️ Переключение на гарантированный семантический компилятор (fallback)...")

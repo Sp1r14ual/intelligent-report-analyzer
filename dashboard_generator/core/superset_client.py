@@ -9,8 +9,9 @@ class SupersetClientError(Exception):
 
 
 class SupersetClient:
-    def __init__(self, base_url: Optional[str] = None):
+    def __init__(self, base_url: Optional[str] = None, public_url: Optional[str] = None):
         self.base_url = (base_url or settings.superset_url).rstrip("/")
+        self.public_url = (public_url or settings.superset_public_url).rstrip("/")
         self.session = requests.Session()
         self.access_token: Optional[str] = None
 
@@ -93,5 +94,5 @@ class SupersetClient:
             raise SupersetClientError(f"Ошибка запроса при импорте бандла в Superset: {exc}")
 
     def get_dashboard_url(self, dashboard_uuid: str) -> str:
-        """Возвращает веб-ссылку на дашборд в интерфейсе Superset."""
-        return f"{self.base_url}/superset/dashboard/{dashboard_uuid}/"
+        """Возвращает веб-ссылку на дашборд в интерфейсе Superset (для браузера пользователя)."""
+        return f"{self.public_url}/superset/dashboard/{dashboard_uuid}/"

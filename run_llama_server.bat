@@ -1,12 +1,12 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title llama-server (WSL / Local LLM)
+title llama-server (YandexGPT 5 Lite 8B)
 
 cd /d "%~dp0"
 
 echo ========================================================
-echo   Starting llama-server for local LLM (WSL)
+echo   Starting llama-server for YandexGPT 5 Lite 8B
 echo ========================================================
 
 set WSL_DISTRO=Ubuntu
@@ -29,17 +29,9 @@ if exist .env (
     )
 )
 
-REM 3. Default models priority
+REM 3. Default model (YandexGPT 5 Lite 8B)
 if "!MODEL_PATH!"=="" (
-    if exist "models\YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf" (
-        set "MODEL_PATH=models\YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
-    ) else if exist "models\Qwen2.5-7B-Instruct-Q4_K_M.gguf" (
-        set "MODEL_PATH=models\Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-    ) else if exist "models\Qwen2.5-3B-Instruct-Q5_K_M.gguf" (
-        set "MODEL_PATH=models\Qwen2.5-3B-Instruct-Q5_K_M.gguf"
-    ) else if exist "models\Qwen2.5-3B-Instruct-Q4_K_M.gguf" (
-        set "MODEL_PATH=models\Qwen2.5-3B-Instruct-Q4_K_M.gguf"
-    )
+    set "MODEL_PATH=models\YandexGPT-5-Lite-8B-instruct-Q4_K_M.gguf"
 )
 
 if not exist "!MODEL_PATH!" (

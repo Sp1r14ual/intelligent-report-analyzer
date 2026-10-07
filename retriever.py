@@ -1,10 +1,10 @@
-import sqlite3
 import re
 
 import faiss
 import numpy as np
 
 from embedding_manager import get_embedder, bytes_to_vector
+from db import get_db_connection
 
 
 def extract_section_fragment(text: str, section_number: str) -> str:
@@ -41,7 +41,7 @@ class FaissRetriever:
     def load_from_db(self):
         """Загружает все чанки с эмбеддингами из таблицы document_chunks
         и строит FAISS-индекс для поиска по косинусному сходству."""
-        conn = sqlite3.connect("reports.db")
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT report_id, chunk_order, chunk_text, embedding
